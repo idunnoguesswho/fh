@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  DSHC Field Forms — static site, no build step.
+  Open index.html directly, or host the folder on any static host (GitHub Pages, Cloudflare Pages, ekat.ca).
+  All data stays in the browser (IndexedDB) until you export a backup.
+-->
+<html lang="en-CA">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b6e79">
+  <meta name="color-scheme" content="light dark">
+  <title>DSHC Field Forms</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+  <!-- Top bar: back button, page title, autosave indicator -->
+  <header id="top" class="noprint">
+    <button id="back" class="icon-btn" aria-label="Back" hidden></button>
+    <h1 id="title">Field Forms</h1>
+    <span id="saved" aria-live="polite"></span>
+  </header>
+
+  <!-- All pages render into this element -->
+  <main id="view"></main>
+
+  <!-- Bottom navigation (built in main.js) -->
+  <nav id="tabs" class="noprint" aria-label="Main"></nav>
+
+  <!-- Modal sheet, toast, hidden file picker used by import actions -->
+  <div id="modal" class="noprint"></div>
+  <div id="toast" class="noprint" role="status"></div>
+  <input type="file" id="filepick" hidden>
+
+  <!-- Suggestion lists reused by several forms (values come from your own historical data) -->
+  <datalist id="dl-mfr">
+    <option value="Labconco"><option value="Mott"><option value="Norlab"><option value="Canlab">
+    <option value="Nuaire"><option value="Hamilton"><option value="HH Hawkins"><option value="Thermo Safeaire">
+    <option value="Kewaunee"><option value="Jamestown"><option value="Fisher"><option value="Sisco">
+    <option value="Western"><option value="Custom">
+  </datalist>
+  <datalist id="dl-width">
+    <option value="15"><option value="20"><option value="28"><option value="35"><option value="47">
+    <option value="48"><option value="60"><option value="72"><option value="96">
+  </datalist>
+  <datalist id="dl-alarm">
+    <option value="Phoenix"><option value="Labconco 1000"><option value="Landis + Gyr"><option value="Siemens">
+    <option value="AFA 500"><option value="AFA 1000"><option value="Air Guard 200"><option value="Vent Alert">
+  </datalist>
+  <datalist id="dl-task">
+    <option value="Fume hood inspection"><option value="Sash cable replacement"><option value="Fume hood repair">
+    <option value="Travel"><option value="Site orientation / safety meeting"><option value="Reporting / admin">
+  </datalist>
+  <datalist id="dl-cat">
+    <option value="Mileage"><option value="Fuel"><option value="Hotel"><option value="Meals"><option value="Parking">
+    <option value="Materials / parts"><option value="Tools"><option value="Other">
+  </datalist>
+
+  <noscript><p style="padding:1rem">This app needs JavaScript enabled.</p></noscript>
+
+  <!-- Plain scripts (not ES modules) so the site also works when opened straight from disk -->
+  <script src="js/core.js"></script>
+  <script src="js/modules.js"></script>
+  <script src="js/docs.js"></script>
+  <script src="js/visit.js"></script>
+  <script src="js/pack.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
