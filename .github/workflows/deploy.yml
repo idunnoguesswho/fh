@@ -1,0 +1,30 @@
+name: Deploy
+
+# Static site at https://ekat.ca/fh/: nothing to build, so just SSH into the
+# VPS and fast-forward the clone at /var/www/fh, which nginx serves directly
+# (see /etc/nginx/snippets/fh.location.conf). A pull is the whole deploy.
+# The deploy key is pinned server-side by a forced command to exactly this
+# fetch + reset, so the script below is effectively documentation.
+# Needs repo secrets DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull latest on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          script: |
+            set -e
+            cd /var/www/fh
+            git fetch origin main
+            git reset --hard origin/main
