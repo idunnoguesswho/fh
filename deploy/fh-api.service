@@ -1,0 +1,24 @@
+# /etc/systemd/system/fh-api.service — storage API for https://ekat.ca/fh/
+# Code: /var/www/fh/server (git clone, updated by fh-deploy). Data: /var/lib/fh/fh.db
+[Unit]
+Description=ekat.ca/fh API (DSHC Field Forms storage)
+After=network.target
+
+[Service]
+Type=simple
+User=fh
+Group=fh
+WorkingDirectory=/var/www/fh/server
+Environment=PORT=3300 HOST=127.0.0.1 FH_DATA_DIR=/var/lib/fh
+ExecStart=/opt/node-runtime/node server.js
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fh
+
+[Install]
+WantedBy=multi-user.target

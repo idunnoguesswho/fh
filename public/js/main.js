@@ -55,7 +55,8 @@
     if (!s.company.address || !s.company.phone) notes.push('Add your business address, phone and tax number in <a href="#/settings">Settings</a> so they print on reports and invoices.');
     const anyData = Store.mem.size > 1;
     const days = s.lastBackup ? (Date.now() - new Date(s.lastBackup).getTime()) / 86400000 : Infinity;
-    if (anyData && days > 30) notes.push(`${s.lastBackup ? 'Last backup was ' + Math.floor(days) + ' days ago.' : 'You have not backed up yet.'} Data lives only on this device — <button class="link" data-act="exportAll">back up now</button>.`);
+    if (anyData && days > 30) notes.push(`${s.lastBackup ? 'Last backup was ' + Math.floor(days) + ' days ago.' : 'You have not backed up yet.'} Your forms are on the server; keep your own copy too — <button class="link" data-act="exportAll">back up now</button>.`);
+    if (App.legacyCount) notes.push(`This device still has ${App.legacyCount} record${App.legacyCount === 1 ? '' : 's'} saved before the switch to the server. <button class="link" data-act="uploadLocal">Upload them now</button>.`);
     const noteHtml = notes.map((n) => `<div class="hint warn">${n}</div>`).join('');
 
     view().innerHTML = noteHtml + `<div class="tiles">${tileHtml}</div>` + unbilled + draftHtml;
@@ -161,14 +162,18 @@
         C.sec('inv', 'Invoicing and rates',
           `<div class="grid2">${C.num('Next invoice number', 'inv.nextNo', r, { step: '1' })}${C.num('Default terms (days)', 'inv.termsDays', r, { step: '1' })}${C.text('Tax label', 'inv.taxLabel', r)}${C.num('Tax rate (%)', 'inv.taxRate', r, { step: '0.01' })}` +
           `${C.num('Price per fume hood inspection ($)', 'inv.fhPrice', r, { step: '0.01' })}${C.num('Hourly rate ($)', 'inv.hourly', r, { step: '0.01' })}${C.num('Mileage rate ($/km)', 'rates.km', r, { step: '0.001' })}</div>` +
-          `${C.area('Default invoice notes', 'inv.notes', r, { rows: 2 })}${C.area('Payment instructions (bank / e-transfer details)', 'inv.payment', r, { rows: 4, ph: 'Printed on every invoice. Stored only on this device.' })}`) +
+          `${C.area('Default invoice notes', 'inv.notes', r, { rows: 2 })}${C.area('Payment instructions (bank / e-transfer details)', 'inv.payment', r, { rows: 4, ph: 'Printed on every invoice. Stored on the DSHC server.' })}`) +
         C.sec('fh', 'Fume hood reference range', `<div class="grid2">${C.num('Minimum average face velocity (fpm)', 'fh.minFpm', r, { step: '1' })}${C.num('Maximum (fpm)', 'fh.maxFpm', r, { step: '1' })}</div><p class="muted small">Used only to flag the average on reports. Set these to whatever your client or standard requires.</p>`) +
         `<details class="card" data-sec="data" id="data" open><summary>Data and backup</summary><div class="body">` +
-        `<p class="muted small">Everything is stored on this device only: ${count('fh')} inspections, ${count('jsa')} JSAs, ${count('veh')} vehicle checks, ${count('site')} site inspections, ${count('time')} time entries, ${count('exp')} expenses, ${count('inv')} invoices, ${count('cust')} customers.${r.lastBackup ? ' Last backup: ' + esc(fmtDate(r.lastBackup)) + '.' : ''}</p>` +
+        `<p class="muted small">Stored on the DSHC server and shared by everyone who signs in: ${count('fh')} inspections, ${count('jsa')} JSAs, ${count('veh')} vehicle checks, ${count('site')} site inspections, ${count('time')} time entries, ${count('exp')} expenses, ${count('inv')} invoices, ${count('cust')} customers.${r.lastBackup ? ' Last backup: ' + esc(fmtDate(r.lastBackup)) + '.' : ''}</p>` +
         `<div class="row"><button class="btn" data-act="exportAll">Back up everything (.json)</button><button class="btn" data-act="importAll">Restore backup</button></div><hr style="border:0;border-top:1px solid var(--line);margin:.9rem 0">` +
         `<p class="small"><b>Inspection history (CSV)</b> — same columns as your “Previous Inspections” spreadsheet. In Excel use File → Save As → CSV to import.</p>` +
         `<div class="row"><button class="btn" data-act="exportCsv">Export inspections (.csv)</button><button class="btn" data-act="importCsv">Import inspections (.csv)</button></div><hr style="border:0;border-top:1px solid var(--line);margin:.9rem 0">` +
-        `<div class="row"><button class="btn" data-act="loadSample">Load sample data</button><button class="btn" data-act="clearSample">Remove sample data</button><button class="btn danger" data-act="eraseAll">Erase everything</button></div></div></details>`;
+        (App.legacyCount ? `<p class="small"><b>Records saved on this device</b> — ${App.legacyCount} from before the switch to the server.</p><div class="row"><button class="btn primary" data-act="uploadLocal">Upload them to the server</button></div><hr style="border:0;border-top:1px solid var(--line);margin:.9rem 0">` : '') +
+        `<div class="row"><button class="btn" data-act="loadSample">Load sample data</button><button class="btn" data-act="clearSample">Remove sample data</button></div></div></details>` +
+        `<details class="card" data-sec="acct" open><summary>Your login</summary><div class="body">` +
+        `<p class="muted small">Signed in as ${esc(Store.user.name || Store.user.email)} (${esc(Store.user.email)}). Your name, signature and vehicle above are yours; everything else is shared.</p>` +
+        `<div class="row"><button class="btn" data-act="changePw">Change password</button><button class="btn" data-act="signOut">Sign out</button></div></div></details>`;
     },
   };
   M.settings = settingsMod;
@@ -242,9 +247,39 @@
     for (const id of del) await Store.del(id);
     toast(del.length ? `Removed ${del.length} sample records` : 'No sample data found'); App.go();
   };
-  act.eraseAll = async () => {
-    if (!(await confirmBox('Erase ALL forms, customers and settings stored on this device? Download a backup first — this cannot be undone.', 'Erase everything'))) return;
-    await Store.clearAll(); toast('Everything erased'); location.hash = '#/home'; App.go();
+  /* -------------------------------------------- login + old device data */
+  act.signOut = async () => {
+    if (!(await confirmBox('Sign out on this device?', 'Sign out', false))) return;
+    await App.flush(); Store.setToken(''); location.hash = '#/home'; location.reload();
+  };
+  act.changePw = () => {
+    const s = modal(`<h3>Change password</h3><form id="pwf">` +
+      `<label class="fld"><span>Current password</span><input type="password" name="old" autocomplete="current-password" required></label>` +
+      `<label class="fld"><span>New password (8+ characters)</span><input type="password" name="new" autocomplete="new-password" minlength="8" required></label>` +
+      `<div class="row end"><button type="button" class="btn" data-x="1">Cancel</button><button class="btn primary">Change</button></div></form>`);
+    s.querySelector('[data-x]').onclick = closeModal;
+    s.querySelector('#pwf').onsubmit = async (e) => {
+      e.preventDefault(); const f = e.target;
+      try { const { data } = await Store.api('POST', 'password', { old: f.old.value, new: f.new.value }); Store.setToken(data.token); closeModal(); toast('Password changed — other devices will need to sign in again', 4000); }
+      catch (err) { toast(err.message, 4000); }
+    };
+  };
+  // One-time move of records the old device-only version kept in this browser.
+  // Newer copies already on the server win; the local copy is left in place.
+  act.uploadLocal = async () => {
+    const recs = await Store.legacy();
+    if (!(await confirmBox(`Upload ${recs.length} record${recs.length === 1 ? '' : 's'} saved on this device to the server, where everyone who signs in can see them?`, 'Upload', false))) return;
+    let n = 0, failed = 0;
+    for (const r of recs) {
+      if (!r || !r.id || !r.type) continue;
+      const cur = r.id === 'settings' ? Store.get('settings-u' + Store.user.id) || Store.get('settings') : Store.get(r.id);
+      if (cur && String(cur.updated || '') >= String(r.updated || '')) continue;
+      const ok = await Store.save(r);
+      if (ok === true) n++; else failed++;
+    }
+    if (failed) { toast(`Uploaded ${n}; ${failed} could not be saved — try again`, 5000); }
+    else { try { localStorage.setItem('fh-legacy-done', '1'); } catch (e) { /* ignore */ } App.legacyCount = 0; toast(`Uploaded ${n} record${n === 1 ? '' : 's'} to the server`, 4000); }
+    App.go();
   };
 
   /* ------------------------------------------------------------ navigation */
@@ -268,7 +303,8 @@
   (async function boot() {
     await Store.init();
     buildNav();
-    if (!Store.idb) toast('Private mode? Data cannot be kept on this device after you close the tab.', 6000);
+    let done = false; try { done = localStorage.getItem('fh-legacy-done') === '1'; } catch (e) { /* ignore */ }
+    App.legacyCount = done ? 0 : (await Store.legacy()).filter((r) => r && r.id && r.type).length;
     if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
     await App.go();
   })();

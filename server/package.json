@@ -1,0 +1,7 @@
+{
+  "name": "fh-api",
+  "private": true,
+  "type": "module",
+  "description": "Storage API for DSHC Field Forms. No dependencies (node:sqlite).",
+  "engines": { "node": ">=24" }
+}

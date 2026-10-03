@@ -92,61 +92,161 @@
   Object.assign(App, { toast, modal, closeModal, confirmBox, menuSheet });
 
   /* ------------------------------------------------------------------ storage */
-  // Every record (forms, customers, settings) lives in one IndexedDB store and is
-  // mirrored in a Map for fast synchronous reads. If IndexedDB is unavailable
-  // (e.g. some private modes) the app still works but data is lost on close.
+  // Every record (forms, customers, settings) is stored on the ekat.ca server
+  // (server/server.js) and shared by everyone who signs in. A copy is kept in a Map
+  // for fast synchronous reads; each save goes straight to the server. The server
+  // numbers every change (rev): saves send the rev they started from, so an edit made
+  // on another device is never silently overwritten (409 -> we reload theirs).
+  // Saves that fail for lack of signal are retried while the page stays open.
+  const API = 'api/';
+  const PERSONAL = ['tech', 'vehicle', 'tripFrom'];   // per-login parts of Settings
   const Store = (App.Store = {
-    mem: new Map(), idb: null,
-    async init() {
-      await new Promise((res) => {
-        try {
-          const rq = indexedDB.open('dshc-field', 1);
-          rq.onupgradeneeded = () => rq.result.createObjectStore('records', { keyPath: 'id' });
-          rq.onsuccess = () => { Store.idb = rq.result; res(); };
-          rq.onerror = () => res();
-          rq.onblocked = () => res();
-        } catch (e) { res(); }
-      });
-      if (Store.idb) {
-        await new Promise((res) => {
-          const rq = Store.idb.transaction('records').objectStore('records').getAll();
-          rq.onsuccess = () => { rq.result.forEach((r) => Store.mem.set(r.id, r)); res(); };
-          rq.onerror = () => res();
+    mem: new Map(), rev: new Map(), cursor: 0, user: null, queue: new Map(), retryTimer: null,
+    token() { try { return localStorage.getItem('fh-token') || ''; } catch (e) { return ''; } },
+    setToken(t) { try { if (t) localStorage.setItem('fh-token', t); else localStorage.removeItem('fh-token'); } catch (e) { /* ignore */ } },
+    async api(method, path, body, timeoutMs = 30000) {
+      const ac = new AbortController(), t = setTimeout(() => ac.abort(), timeoutMs);
+      let r;
+      try {
+        r = await fetch(API + path, {
+          method, cache: 'no-store', signal: ac.signal,
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + Store.token() },
+          body: body === undefined ? undefined : JSON.stringify(body),
         });
+      } catch (e) { throw Object.assign(new Error('Can’t reach the server'), { offline: true }); } finally { clearTimeout(t); }
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 401 && path !== 'login') { Store.setToken(''); Store.user = null; }
+      if (!r.ok && r.status !== 409) throw Object.assign(new Error(data.error || 'Server error ' + r.status), { status: r.status });
+      return { status: r.status, data };
+    },
+    // Sign in (or show "can't reach the server") until we have a user and all records.
+    async init() {
+      for (;;) {
+        if (Store.token()) {
+          try { Store.user = (await Store.api('GET', 'me')).data.user; await Store.pull(); return; }
+          catch (e) { if (e.status !== 401) { await App.offlineScreen(e.message); continue; } }
+        }
+        await App.loginScreen();
       }
-      // Ask the browser not to evict our data under storage pressure
-      try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
+    },
+    apply(w) {
+      if (Ctx.rec && Ctx.rec.id === w.id && Ctx.mode === 'form') return;   // the open form resolves its own conflicts on save
+      Store.rev.set(w.id, w.rev);
+      if (w.deleted) Store.mem.delete(w.id); else Store.mem.set(w.id, w.data);
+    },
+    // Fetch everything changed since the last pull (first call loads everything).
+    async pull(timeoutMs) {
+      const { data } = await Store.api('GET', 'records?since=' + Store.cursor, undefined, timeoutMs);
+      data.records.forEach(Store.apply);
+      Store.cursor = Math.max(Store.cursor, data.rev);
+      return data.records.length;
     },
     all(type) { const out = []; Store.mem.forEach((r) => { if (r.type === type) out.push(r); }); return out; },
     get(id) { return Store.mem.get(id); },
-    save(rec) {
+    // Resolves true when stored on the server, 'conflict' if someone else changed it first
+    // (their version is loaded instead), false if it could not be sent (queued for retry).
+    async save(rec) {
       rec.updated = nowIso();
       Store.mem.set(rec.id, rec);                       // synchronous so the next screen sees it immediately
-      if (!Store.idb) return Promise.resolve();
+      if (rec.id !== 'settings' || !Store.user) return Store.put(rec);
+      // Your name, signature and vehicle belong to your login; the rest of Settings is shared.
+      const mine = { id: 'settings-u' + Store.user.id, type: 'mysettings', updated: rec.updated }, shared = Object.assign({}, rec);
+      PERSONAL.forEach((k) => { if (k in rec) mine[k] = rec[k]; delete shared[k]; });
+      Store.mem.set(mine.id, mine);
+      const a = await Store.put(shared), b = await Store.put(mine);
+      return a === true ? b : a;
+    },
+    async put(rec) {
+      try {
+        const { status, data } = await Store.api('PUT', 'records/' + encodeURIComponent(rec.id), { base: Store.rev.get(rec.id) || 0, data: rec });
+        Store.queue.delete(rec.id); Store.showQueue();
+        if (status === 409) { Store.conflict(data.record); return 'conflict'; }
+        Store.rev.set(rec.id, data.rev);
+        return true;
+      } catch (e) {
+        if (e.status === 401) { toast('You were signed out — sign in again. Your last change was not saved.', 6000); setTimeout(() => location.reload(), 2500); return false; }
+        if (e.status) { toast('Could not save: ' + e.message, 5000); return false; }
+        Store.queue.set(rec.id, rec); Store.showQueue();
+        clearTimeout(Store.retryTimer); Store.retryTimer = setTimeout(Store.retry, 15000);
+        return false;
+      }
+    },
+    async retry() {
+      for (const rec of Array.from(Store.queue.values())) { if ((await Store.put(rec)) === false) return; }
+      toast('Back online — all changes saved');
+    },
+    showQueue() { const n = Store.queue.size; if (n) setSaved(`Not saved — no connection (${n} waiting)`); },
+    conflict(w) {
+      Store.rev.set(w.id, w.rev);
+      if (w.deleted) Store.mem.delete(w.id); else Store.mem.set(w.id, w.data);
+      toast('Someone else changed this record — showing their latest version.', 5000);
+      if (Ctx.rec && Ctx.rec.id === w.id) { Ctx.dirty = false; Ctx.rec = null; setTimeout(App.go, 50); }
+    },
+    async del(id) {
+      const old = Store.mem.get(id);
+      Store.mem.delete(id);
+      try {
+        const { status, data } = await Store.api('DELETE', 'records/' + encodeURIComponent(id) + '?base=' + (Store.rev.get(id) || 0));
+        if (status === 409) { Store.conflict(data.record); return false; }
+        Store.rev.set(id, data.rev);
+        return true;
+      } catch (e) {
+        if (old) Store.mem.set(id, old);
+        toast('Could not delete — ' + e.message, 4500);
+        return false;
+      }
+    },
+    // Records saved in this browser by the old, device-only version of the app.
+    legacy() {
       return new Promise((res) => {
         try {
-          const tx = Store.idb.transaction('records', 'readwrite');
-          tx.objectStore('records').put(rec);
-          tx.oncomplete = () => res();
-          tx.onerror = () => { toast('Could not save — device storage may be full'); res(); };
-        } catch (e) { toast('Could not save this record'); res(); }
+          const rq = indexedDB.open('dshc-field');
+          rq.onupgradeneeded = () => { rq.transaction.abort(); res([]); };   // never existed here
+          rq.onerror = () => res([]);
+          rq.onsuccess = () => {
+            const d = rq.result;
+            if (!d.objectStoreNames.contains('records')) { d.close(); res([]); return; }
+            const g = d.transaction('records').objectStore('records').getAll();
+            g.onsuccess = () => { d.close(); res(g.result || []); };
+            g.onerror = () => { d.close(); res([]); };
+          };
+        } catch (e) { res([]); }
       });
     },
-    del(id) {
-      Store.mem.delete(id);
-      if (!Store.idb) return Promise.resolve();
-      return new Promise((res) => { const tx = Store.idb.transaction('records', 'readwrite'); tx.objectStore('records').delete(id); tx.oncomplete = () => res(); tx.onerror = () => res(); });
-    },
-    clearAll() {
-      Store.mem.clear();
-      if (!Store.idb) return Promise.resolve();
-      return new Promise((res) => { const tx = Store.idb.transaction('records', 'readwrite'); tx.objectStore('records').clear(); tx.oncomplete = () => res(); tx.onerror = () => res(); });
-    },
+  });
+  window.addEventListener('beforeunload', (e) => { if (Store.queue.size) { e.preventDefault(); e.returnValue = ''; } });
+
+  // Sign-in and "no connection" screens shown by Store.init()
+  App.loginScreen = (msg) => new Promise((done) => {
+    $('#tabs').innerHTML = ''; $('#title').textContent = 'Field Forms'; $('#back').hidden = true;
+    $('#view').innerHTML = `<form class="card pad" id="login" style="max-width:420px;margin:1.5rem auto">` +
+      `<h3 style="margin-top:0">Sign in</h3><p class="muted small">Forms are stored on the DSHC server and shared with everyone who signs in.</p>` +
+      `<label class="fld"><span>Email</span><input type="email" name="email" autocomplete="username" required></label>` +
+      `<label class="fld"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>` +
+      `<p class="small" id="loginmsg" role="alert" style="color:var(--bad)">${esc(msg || '')}</p>` +
+      `<button class="btn primary block">Sign in</button></form>`;
+    const f = $('#login');
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = f.querySelector('button'); btn.disabled = true;
+      try {
+        const { data } = await Store.api('POST', 'login', { email: f.email.value, password: f.password.value });
+        Store.setToken(data.token); done();
+      } catch (err) { $('#loginmsg').textContent = err.message; btn.disabled = false; }
+    };
+  });
+  App.offlineScreen = (msg) => new Promise((done) => {
+    $('#tabs').innerHTML = '';
+    $('#view').innerHTML = `<div class="card pad" style="max-width:420px;margin:1.5rem auto"><h3 style="margin-top:0">${esc(msg)}</h3>` +
+      `<p class="muted">Your forms are stored on the server, so this app needs a connection. Check your signal and try again.</p>` +
+      `<button class="btn primary block" id="retry">Try again</button></div>`;
+    $('#retry').onclick = done;
   });
 
   /* ----------------------------------------------------------------- settings */
-  // Your business details are NOT in the source code. They live only in this
-  // browser (Settings page) so the site can be hosted publicly without exposing them.
+  // Your business details are NOT in the source code. They are stored on the server
+  // (Settings page) so the site can be hosted publicly without exposing them.
+  // Name, signature and vehicle are kept per login in a 'settings-u<id>' record.
   const DEFAULTS = {
     id: 'settings', type: 'settings',
     company: { name: 'DS Home Computing Ltd.', tagline: 'Happy to be of service', address: '', phone: '', email: '', web: 'dshome.ca', taxNo: '', logo: '' },
@@ -162,7 +262,7 @@
     lastBackup: '',
   };
   const Settings = (App.Settings = {
-    get() { return deepMerge(clone(DEFAULTS), Store.get('settings') || {}); },
+    get() { return deepMerge(deepMerge(clone(DEFAULTS), Store.get('settings') || {}), (Store.user && Store.get('settings-u' + Store.user.id)) || {}); },
     set(path, value) { const s = Settings.get(); setPath(s, path, value); return Store.save(s); },
     bump(counter) { const s = Settings.get(); s.counters[counter] = (s.counters[counter] || 0) + 1; return Store.save(s); },
   });
@@ -184,10 +284,11 @@
     const r = Ctx.rec; if (!r || !Ctx.dirty) return;
     Ctx.dirty = false;
     const first = !Store.get(r.id);
-    await Store.save(r);
+    const ok = await Store.save(r);
+    if (ok === 'conflict') return;                  // the other device's version is being shown instead
     delete Ctx.pending[r.id];
     if (first && Ctx.mod && Ctx.mod.afterFirstSave) Ctx.mod.afterFirstSave(r);
-    setSaved('Saved ✓');
+    if (ok) setSaved('Saved ✓'); else if (!Store.queue.size) setSaved('Not saved');
   }
   // Force-save even when nothing was typed (e.g. user taps Preview on a brand-new form)
   async function saveNow() { if (Ctx.rec) { Ctx.dirty = true; await flush(); } }
@@ -358,9 +459,11 @@
   };
   async function go() {
     await flush();                                  // never lose edits when navigating
-    closeModal(); setSaved('');
+    closeModal(); setSaved(''); Store.showQueue();
     document.body.classList.remove('formmode');
     Ctx.mode = null; Ctx.rec = null; Ctx.mod = null;
+    // Pick up changes made on other devices (quick; skipped when there's no signal)
+    try { await Store.pull(5000); } catch (e) { if (e.status === 401) { location.reload(); return; } }
     const h = location.hash || '#/home';
     for (const [re, fn] of routes) {
       const m = re.exec(h);

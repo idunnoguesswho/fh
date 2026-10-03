@@ -98,7 +98,7 @@ details.card[open] > summary { border-bottom: 1px solid var(--line); }
 .fld { display: block; margin: 0 0 .65rem; min-width: 0; }
 .grid2 > .fld, .grid3 > .fld { margin-bottom: 0; }
 .fld > span { display: block; font-size: .82rem; color: var(--muted); margin-bottom: .2rem; font-weight: 500; }
-input[type=text], input[type=number], input[type=date], input[type=time], input[type=tel], input[type=email], input[type=url], select, textarea {
+input[type=text], input[type=number], input[type=date], input[type=time], input[type=tel], input[type=email], input[type=password], input[type=url], select, textarea {
   width: 100%; min-height: 46px; padding: .55rem .7rem; font: inherit; font-size: 16px; /* 16px stops iOS zooming on focus */
   color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
 }
